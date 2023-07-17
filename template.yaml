@@ -101,7 +101,17 @@ Resources:
                   - logs:DescribeLogGroups
                 Resource:
                   Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
-
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ApiAuthPasswordParamName} 
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/ssm
+              
   IotMessageForwarderLambda:
     Type: AWS::Serverless::Function
     Properties:
