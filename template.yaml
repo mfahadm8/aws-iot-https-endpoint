@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  RedirectUrl:
+    Type: String
+    Default: "https://google.com"
+  
+  ApiAuthPasswordParamName:
+    Type: String
+    Default: "API_AUTH_PASSWORD"
+
+Globals:
+  Api:
+    OpenApiVersion: 3.0.1
+
+Resources:
+  ApiAuthorizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: "ApiAuthorizerLambda"
+      Handler: index.lambda_handler
+      Runtime: python3.8
+      MemorySize: 128
+      Environment:
+        Variables:
+          PASSWORD_PARAM_NAME: !Ref ApiAuthPasswordParamName
+      Role:
+        Fn::GetAtt:
+          - ApiAuthorizerLambdaRole
+          - Arn
+      Timeout: 600
+      Code: .
+    Metadata:
+      BuildMethod: makefile
+
+  ApiGwAccountConfig:
+    Type: "AWS::ApiGateway::Account"
+    Properties:
+      CloudWatchRoleArn: !GetAtt "ApiGatewayLoggingRole.Arn"
+
+  ApiGatewayLoggingRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "apigateway.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+
+  AWSApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ApiGateway
+      StageName: prod
+      MethodSettings:
+        - LoggingLevel: INFO
+          ResourcePath: "/*" # allows for logging on any resource
+          HttpMethod: "*" # allows for logging on any method
+      Auth:
+        ApiKeyRequired: true
+        Authorizers:
+          ApiAuthorizer:
+            FunctionPayloadType: TOKEN
+            FunctionArn:
+              Fn::GetAtt: [ApiAuthorizerLambda, Arn]
+            Identity:
+              Header: Api-Pass
+        DefaultAuthorizer: ApiAuthorizer
+      ApiKeySourceType: HEADER
+
+  ApiAuthorizerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: Lambda_Permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+
+  IotMessageForwarderLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: "IotMessageForwarderLambda"
+      Handler: index.lambda_handler
+      Runtime: python3.8
+      MemorySize: 128
+      Timeout: 600
+      CodeUri: .
+      Role:
+        Fn::GetAtt:
+          - IotMessageForwarderLambdaRole
+          - Arn
+      Environment:
+        Variables:
+          REDIRECT_URL: !Ref RedirectUrl
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+            RestApiId:
+              Ref: AWSApiGateway
+
+    Metadata:
+      BuildMethod: makefile
+
+  IotMessageForwarderLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: Lambda_Permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn:
+      - AWSApiGateway
+    Properties:
+      Description: Example usage plan with a monthly quota of 1000 calls and method-level throttling for /pets GET 
+      ApiStages:
+        - ApiId: !Ref AWSApiGateway
+          Stage: prod
+      Quota:
+        Limit: 1000
+        Period: MONTH
+      Throttle:
+        RateLimit: 100.0
+        BurstLimit: 200
+      UsagePlanName: "Usage Plan"
+
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties: 
+      Description: API Key
+      Name: ApiKey
+      Enabled: True
+
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
